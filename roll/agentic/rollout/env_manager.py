@@ -299,10 +299,12 @@ class EnvManager:
         # execute actions in env
         current_player = self.rollout_cache['current_player']
         valid_actions, lose_for_wrong_format = self._extract_map_valid_actions(
-            entry, 
-            env_input["actions"], 
+            entry,
+            env_input["actions"],
             self.rollout_cache["history"][-1]["legal_actions"]
         )
+        # AWM 阶段一：捕获模型决策前局面的粗粒度 state_id（仅 tic-tac-toe），用于 V-table 基线
+        env_input["state_id"] = self._capture_state_id(entry, current_player)
         if lose_for_wrong_format or overlong_response or overlong_sequence:
             execute_results = entry["env"].get_losing_state(current_player, overlong_response, overlong_sequence)
             format_reward = min(self.worker_config.format_penalty, 0)
@@ -548,6 +550,8 @@ class EnvManager:
             raise ValueError("reward not found in rollout_cache")
         # print("scores: ", scores)
         episode_scores = [sum(i) for i in scores]
+        # AWM 阶段一：每个 turn 的 state_id（与 scores 同序；非 tic-tac-toe 为 None）
+        turn_state_ids = [[i.get("state_id") for i in self.rollout_cache[history_key]]]
         penalty = self.rollout_cache["penalty"]
 
         non_prompt_mask, score_tensor, response_mask, turn_end_positions = get_masks_and_scores(
@@ -592,6 +596,8 @@ class EnvManager:
                 "messages_list": np.array(messages_list, dtype=object),
                 "tags": np.array([self.rollout_cache["tag"]], dtype=object),
                 "frames": np.array([self.rollout_cache["frames"]], dtype=object),
+                # AWM 阶段一：每条轨迹各 turn 的 state_id（ragged list，与 turn scores 同序）
+                "turn_state_ids": np.array(turn_state_ids, dtype=object),
             }
         )
         # pad to response length
@@ -718,6 +724,22 @@ class EnvManager:
             # print(f"Invalid actions: {actions}, mapped actions: {mapped_actions}, legal actions: {legal_actions}")
         return mapped_actions, lose_for_wrong_format
 
+    def _capture_state_id(self, entry: Dict, current_player: int):
+        """AWM 阶段一：捕获模型决策前局面的粗粒度 state_id（仅 tic-tac-toe）。
+
+        在 env.step 之前调用，此时 entry['env'].state 是模型面对的局面。
+        其他游戏返回 None（state-value baseline 仅 tic-tac-toe 启用）。
+        """
+        if self.rollout_cache.get("tag") != "tictactoe":
+            return None
+        try:
+            from roll.agentic.advantage import tictactoe_coarse_state_id
+
+            env = entry["env"]
+            return tictactoe_coarse_state_id(env.state.observation_tensor(), env.current_player())
+        except Exception:
+            return None
+
     def _log_env_state(self, execute_results: Tuple[Dict], current_player: int, format_reward: float=0, env_input: Dict=None):
         assert execute_results[0]['current_player'] == current_player, f"current_player: {current_player}, execute_results: {execute_results}"
         for idx, turn in enumerate(execute_results):
@@ -749,12 +771,14 @@ class EnvManager:
                 length_penalty = self.compute_length_penalty(env_input["token_length"])
                 num_actions_info['reward'] += format_reward + length_penalty
                 num_actions_info.update({
-                    'llm_response': env_input["llm_response"], 
-                    'llm_raw_response': env_input["llm_raw_response"], 
-                    'current_sequence_length': env_input["current_sequence_length"], 
-                    'token_length': env_input["token_length"], 
-                    'token_left': env_input["token_left"], 
+                    'llm_response': env_input["llm_response"],
+                    'llm_raw_response': env_input["llm_raw_response"],
+                    'current_sequence_length': env_input["current_sequence_length"],
+                    'token_length': env_input["token_length"],
+                    'token_left': env_input["token_left"],
                 })
+                # AWM 阶段一：把模型本回合的 state_id 记入 turn 记录（None 则不参与 V-table）
+                num_actions_info["state_id"] = env_input.get("state_id")
         
             # 保护历史记录更新操作
             with self.internal_lock:

@@ -876,7 +876,7 @@ def reward_normalize_by_player(data: "DataProto", rewards: torch.Tensor, rn_cfg,
 
 
 @torch.no_grad()
-def reward_postprocess_agentic(data: "DataProto", pipeline_config: AgenticConfig, running_ctrl=None, kl_ctrl=None):
+def reward_postprocess_agentic(data: "DataProto", pipeline_config: AgenticConfig, running_ctrl=None, kl_ctrl=None, state_value_table=None):
     # 0. get rewards (process token_level_rewards directly if use_turn_scores is True)
     if pipeline_config.use_turn_scores:
         rewards = data.batch["token_level_rewards"].clone().detach()
@@ -889,11 +889,27 @@ def reward_postprocess_agentic(data: "DataProto", pipeline_config: AgenticConfig
     metrics = {"critic/reward_clip_frac": 0.0}
 
     # 1. normalize (identity/mean/mean_std/asym_clip/running)
-    # Check if we should normalize players separately in self-play mode
-    if pipeline_config.reward_normalization.separate_norm_for_selfplay:
+    # AWM 阶段一：若启用 state-value baseline（路线B），用 V-table hybrid 基线做 turn 级条件化，
+    # 替代 role-based 归一化（此时 rewards 仍为 token 级 (bsz,seq_len)，与 turn_end_positions 对齐）
+    if (
+        pipeline_config.state_value.enabled
+        and pipeline_config.use_turn_scores
+        and state_value_table is not None
+    ):
+        from roll.agentic.advantage import apply_state_value_baseline
+
+        rewards, sv_metrics = apply_state_value_baseline(
+            rewards=rewards,
+            turn_end_mask=mask,
+            turn_state_ids_arr=data.non_tensor_batch.get("turn_state_ids"),
+            svt=state_value_table,
+        )
+        metrics.update(sv_metrics)
+    elif pipeline_config.reward_normalization.separate_norm_for_selfplay:
+        # Check if we should normalize players separately in self-play mode
         rewards = reward_normalize_by_player(
             data=data,
-            rewards=rewards, 
+            rewards=rewards,
             rn_cfg=pipeline_config.reward_normalization,
             running_ctrl=running_ctrl,
             mask=mask

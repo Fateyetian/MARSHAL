@@ -106,6 +106,21 @@ class AgenticPipeline(BasePipeline):
 
         self.running = {}
 
+        # AWM 阶段一：跨 step 的 state-value V-table（仅 state_value.enabled 时创建，否则 None）
+        sv_cfg = self.pipeline_config.state_value
+        if getattr(sv_cfg, "enabled", False):
+            from roll.agentic.advantage import StateValueTable
+
+            self.state_value_table = StateValueTable(
+                ema_eta=sv_cfg.ema_eta, min_count=sv_cfg.min_count, alpha=sv_cfg.alpha
+            )
+            logger.info(
+                f"AWM state-value baseline enabled: ema_eta={sv_cfg.ema_eta}, "
+                f"min_count={sv_cfg.min_count}, alpha={sv_cfg.alpha}"
+            )
+        else:
+            self.state_value_table = None
+
     @torch.no_grad()
     def run(self):
         # 计算tokens per second 系统吞吐
@@ -260,6 +275,7 @@ class AgenticPipeline(BasePipeline):
                                 pipeline_config=self.pipeline_config,
                                 running_ctrl=self.running[group_name],
                                 kl_ctrl=self.kl_ctrl,
+                                state_value_table=self.state_value_table,
                             )
 
                         # 2. update metrics and add group_batch to batch_list

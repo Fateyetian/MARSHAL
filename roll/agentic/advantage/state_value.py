@@ -146,3 +146,58 @@ class StateValueTable:
 
     def __len__(self) -> int:
         return len(self.values)
+
+
+def apply_state_value_baseline(rewards, turn_end_mask, turn_state_ids_arr, svt: "StateValueTable"):
+    """AWM 阶段一：在 turn 级别用 V-table hybrid 基线条件化 advantage。
+
+    在 reward_postprocess_agentic 内部调用，此时 rewards 为 token 级 (bsz, seq_len)，
+    turn_end_mask 标记每个 turn 结尾 token 位置（与 rewards 同序对齐，避免 off-by-one）。
+
+    对每个有 state_id 的 turn：
+        1. 收集 (state_id, 该 turn 的 reward)
+        2. 用 svt.compute_baselines 得 hybrid 基线 b(s_k)
+        3. rewards 的该 turn 位置减去 b(s_k)  -> A_k = R_k - b(s_k)
+        4. 用本 batch 数据 EMA 更新 V-table（跨 step 累积）
+
+    返回 (rewards, metrics)。state_id 为 None 的 turn（非 tic-tac-toe）不参与，原值保留。
+    """
+    import torch  # 局部导入，避免模块加载时强依赖
+
+    metrics = {"state_value/num_states": len(svt), "state_value/num_turns_used": 0, "state_value/baseline_mean": 0.0}
+    if turn_state_ids_arr is None:
+        return rewards, metrics
+
+    bsz = rewards.shape[0]
+    all_sids: List[int] = []
+    all_rewards: List[float] = []
+    locs: List[Tuple[int, int]] = []  # (sample_idx, token_pos)
+
+    for i in range(bsz):
+        sids = turn_state_ids_arr[i]
+        end_positions = turn_end_mask[i].nonzero(as_tuple=True)[0].tolist()
+        for k, sid in enumerate(sids):
+            if sid is None or k >= len(end_positions):
+                continue
+            pos = end_positions[k]
+            if pos >= rewards.shape[1]:
+                continue
+            all_sids.append(int(sid))
+            all_rewards.append(float(rewards[i, pos].item()))
+            locs.append((i, int(pos)))
+
+    metrics["state_value/num_turns_used"] = len(all_sids)
+    if len(all_sids) == 0:
+        return rewards, metrics
+
+    baselines = svt.compute_baselines(all_sids, np.asarray(all_rewards, dtype=np.float32))
+    metrics["state_value/baseline_mean"] = float(np.mean(baselines))
+
+    for (i, pos), b in zip(locs, baselines):
+        rewards[i, pos] = rewards[i, pos] - b
+
+    # 用本 batch 数据更新 V-table（EMA，跨 step 累积）
+    svt.update(all_sids, np.asarray(all_rewards, dtype=np.float32))
+    metrics["state_value/num_states"] = len(svt)
+    return rewards, metrics
+

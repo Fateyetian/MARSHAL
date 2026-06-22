@@ -21,9 +21,24 @@ class RewardNormalizationConfig:
     grouping: str = field(default="state", metadata={"help": "state / batch / inductive"})
     method: str = field(default="identity", metadata={"help": "asym_clip / identity / mean_std"})
     separate_norm_for_selfplay: bool = field(
-        default=False, 
+        default=False,
         metadata={"help": "In self-play mode, normalize rewards separately for each player (True) or together (False)"}
     )
+
+
+@dataclass
+class StateValueConfig:
+    """AWM 阶段一：turn 级 state-conditioned advantage（V-table 基线）。
+
+    默认 enabled=False，此时不影响 baseline（reward 流程逐字节不变）。
+    开启后：在 reward_postprocess 之后，按 turn 用 V-table 基线减去 token_level_rewards，
+    实现 turn 级 advantage A_k = R_k - b(s_k)，其中 b(s_k) 为 hybrid 基线。
+    """
+    enabled: bool = field(default=False, metadata={"help": "是否启用 state-value baseline（路线B）"})
+    ema_eta: float = field(default=0.1, metadata={"help": "V-table EMA 更新系数"})
+    min_count: int = field(default=2, metadata={"help": "batch 内同状态样本<此值则 batch 项回退全局均值"})
+    alpha: float = field(default=0.5, metadata={"help": "hybrid 融合：b(s)=alpha*batch_mean+(1-alpha)*V(s)"})
+
 
 
 @dataclass
@@ -88,6 +103,9 @@ class AgenticConfig(BaseConfig):
     enable_think: bool = field(default=True, metadata={"help": "False -> no think RL"})
     reward_normalization: RewardNormalizationConfig = field(
         default_factory=RewardNormalizationConfig, metadata={"help": "Reward normalization configuration."}
+    )
+    state_value: StateValueConfig = field(
+        default_factory=StateValueConfig, metadata={"help": "AWM 阶段一 state-value baseline (route B) configuration."}
     )
     special_token_list: List[str] = field(
         default_factory=lambda: ["<think>", "</think>", "<answer>", "</answer>", "<|im_start|>", "<|im_end|>"],
