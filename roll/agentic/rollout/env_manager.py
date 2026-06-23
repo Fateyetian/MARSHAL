@@ -728,15 +728,17 @@ class EnvManager:
         """AWM 阶段一：捕获模型决策前局面的粗粒度 state_id（仅 tic-tac-toe）。
 
         在 env.step 之前调用，此时 entry['env'].state 是模型面对的局面。
+        tag 为 config key（如 "TicTacToe" / "TicTacToe-first-100"），用 startswith 覆盖全部变体。
         其他游戏返回 None（state-value baseline 仅 tic-tac-toe 启用）。
         """
-        if self.rollout_cache.get("tag") != "tictactoe":
+        if not str(self.rollout_cache.get("tag", "")).startswith("TicTacToe"):
             return None
         try:
             from roll.agentic.advantage import tictactoe_coarse_state_id
 
             env = entry["env"]
-            return tictactoe_coarse_state_id(env.state.observation_tensor(), env.current_player())
+            # 用 OpenSpiel 底层 state（env.state.current_player 是方法，已验证）
+            return tictactoe_coarse_state_id(env.state.observation_tensor(), env.state.current_player())
         except Exception:
             return None
 
