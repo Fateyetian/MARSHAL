@@ -52,8 +52,8 @@ state_value:
   min_count: 2        # batch 内同状态样本<此值则 batch 项回退全局均值
   alpha: 0.5          # hybrid: b(s)=alpha*batch_mean+(1-alpha)*V(s)
 
-max_steps: 2
-save_steps: 2
+max_steps: 50
+save_steps: 50
 logging_steps: 1
 eval_steps: 5
 resume_from_checkpoint: false
